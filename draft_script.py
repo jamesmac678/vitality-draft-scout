@@ -2,26 +2,32 @@ import mwclient
 import requests
 import os
 import datetime
+import time
 
 # Configuration
 TEAM_NAME = "Gen.G"
 WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_GENG")
 
+# Adding a User Agent is critical for Leaguepedia API access
 site = mwclient.Site('lol.fandom.com', path='/')
+site.user_agent = 'VitalityDraftBot/1.0 (jamesmac678@example.com)' # Replace with your email if you like
 
 def get_drafts(days_back=30):
     start_date = (datetime.datetime.now() - datetime.timedelta(days=days_back)).strftime('%Y-%m-%d')
     
-    # Query for games involving the team
     where_clause = f"(Team1='{TEAM_NAME}' OR Team2='{TEAM_NAME}') AND DateTime_UTC >= '{start_date}'"
-    results = site.api('cargoquery',
-        tables="ScoreboardGames",
-        fields="Team1, Team2, WinTeam, ScoreboardID_Wiki, ChampionPicks, Venue, GameNum, MatchID",
-        where=where_clause,
-        order_by="DateTime_UTC DESC"
-    )
+    
+    try:
+        results = site.api('cargoquery',
+            tables="ScoreboardGames",
+            fields="Team1, Team2, WinTeam, ScoreboardID_Wiki, ChampionPicks, Venue, GameNum, MatchID, BlueBans, RedBans",
+            where=where_clause,
+            order_by="DateTime_UTC DESC"
+        )
+    except Exception as e:
+        print(f"Error fetching data: {e}")
+        return {}
 
-    # Group games by MatchID (to keep the series together)
     series_dict = {}
     for match in results['cargoquery']:
         data = match['title']
@@ -33,33 +39,35 @@ def get_drafts(days_back=30):
     return series_dict
 
 def post_to_discord(series_data):
+    if not series_data:
+        print("No recent matches found to post.")
+        return
+
     for m_id, games in series_data.items():
-        # Sort games by Game Number
         games.sort(key=lambda x: x['GameNum'])
-        
         embeds = []
         t1, t2 = games[0]['Team1'], games[0]['Team2']
         
         for game in games:
-            # Format the draft string visually
             picks = game['ChampionPicks'].replace(',', ' | ')
+            # Adding bans for Fearless context
+            bans = f"Blue: {game['BlueBans']} \nRed: {game['RedBans']}"
             
             embed = {
                 "title": f"Game {game['GameNum']}: {t1} vs {t2}",
-                "description": f"**Draft:**\n`{picks}`",
+                "description": f"**Draft Picks:**\n`{picks}`\n\n**Bans:**\n`{bans}`",
                 "url": f"https://lol.fandom.com/wiki/{game['ScoreboardID_Wiki'].replace(' ', '_')}",
-                "color": 5814783 if game['WinTeam'] == TEAM_NAME else 15158332,
-                "footer": {"text": f"Series ID: {m_id}"}
+                "color": 5814783 if game['WinTeam'] == TEAM_NAME else 15158332
             }
             embeds.append(embed)
 
-        # Discord allows up to 10 embeds in one message (perfect for Bo3/Bo5)
         payload = {
-            "content": f"## 📊 Series Report: {t1} vs {t2} (Fearless Mode Context)",
-            "embeds": embeds
+            "content": f"## 📊 Series Report: {t1} vs {t2}",
+            "embeds": embeds[:10] 
         }
         requests.post(WEBHOOK_URL, json=payload)
+        time.sleep(2) # Brief pause between series to avoid Discord rate limits
 
 if __name__ == "__main__":
-    data = get_drafts(30) # Backtest 30 days
+    data = get_drafts(30)
     post_to_discord(data)
